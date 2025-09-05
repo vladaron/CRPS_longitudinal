@@ -9,7 +9,7 @@ To facilitate the implementation of early CRPS profiling, the following link pro
 
 CODE
 
-QST analyses
-Figure 6
-Predictive models
+- QST analyses: XXX.Rmd
+- Figure 6. Evolution of each Biopsychosocial Early CRPS (BE-CRPS) profile: XXX.Rmd
+- Predictive models: XXX.Rmd
 
