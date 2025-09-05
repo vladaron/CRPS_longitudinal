@@ -1,0 +1,350 @@
+---
+title: "CRPS mapping: longitudinal analysis - outcomes figure"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    df_print: paged
+    toc: yes
+    theme: readable
+    highlight: tango
+    number_section: no
+---
+
+# Set-up
+
+```{r set_up, include = F}
+
+library(ggtext) # vizualization tools
+library(kableExtra) # table
+library(glue) #string formatting
+library(ggplot2) #data vizualization
+library(tidyverse) #data handling tools
+library(ftExtra) #tables
+library(officedown) #table export in .docx
+library(officer) #table export in .docx
+library(patchwork) #plot assembly
+library(readxl) #excel tools
+library(writexl) #excel tools
+library(flextable) #table
+library(grid) #plot assembly
+library(ggpubr) #vizualization tools
+library(ggsci) #vizualization tools
+library(here) #path setting
+
+# chunk formatting options
+knitr::opts_chunk$set(
+  tidy    = TRUE,
+  warning = FALSE,
+  message = FALSE, 
+  echo = FALSE,
+  comment = FALSE,
+  fig.align = "defaut",
+  fig.width = 8,
+  fig.asp = 0.62,
+  out.width = "100%"
+  )
+
+```
+
+```{r functions}
+
+# confidence interval computation functions
+ci_low <- function(x){
+  x <- x[! is.na(x)]
+  avg <- mean(x, na.rm = TRUE)
+  sd <- sd(x, na.rm = TRUE)
+  n <- length(x)
+  error <- qnorm(0.95) * sd/sqrt(n)
+  avg - error
+}
+
+ci_high <- function(x){
+  x <- x[! is.na(x)]
+  avg <- mean(x)
+  sd <- sd(x)
+  n <- length(x)
+  error <- qnorm(0.95) * sd/sqrt(n)
+  avg + error
+}
+
+#theming ggplot function
+my_theme <- function(base_size = 9, 
+                     base_family = 'Arial',
+                     base_line_size = base_size / 22,
+                     base_rect_size = base_size / 22,
+                     md = F) {
+  theme(
+    axis.line.y = element_line(colour = "black"), 
+    axis.line.x = element_line(colour = "black"), 
+    panel.background = element_blank(), 
+    plot.title = element_text(hjust = 0), 
+    plot.subtitle = element_text(hjust = 0),
+    axis.title.y = if (md) element_markdown() else element_text(),
+    plot.margin = margin(0.5, 0.5, 0.5, 0.5),
+    panel.spacing = unit(1, "lines")
+  )
+}
+
+
+
+
+
+```
+
+```{r data}
+# data import
+data <- read_excel(here("data", "data_time_figure_20250220.xlsx"))
+
+# plot formatting data
+d_plot <- data |> 
+  select(patient_id, redcap_event_code, Modal, quick_dash_score, lefsscore, bpi_pain_interference, bpi_pain_intensity, css, dichotoumous_diagnosis, EQindex, work_status, disability) |> 
+  mutate(redcap_event_code = if_else(redcap_event_code == 1, 2.47, redcap_event_code)) 
+
+
+
+```
+
+
+# Figure 5
+
+```{r fun_all_sample}
+
+
+
+# function to plot evolution for each outcome
+p_all_fun <- function(out) {
+  
+  units <- switch(out,
+    "quick_dash_score" = "(/xdash)",
+    "disability" = "Z-score",
+    "css" = "CSS (/16)",
+    "EQindex" = "EQ index (/1)",
+    "pain" = "(/10)",
+    "bpi_pain_intensity" ="VAS (/10)",
+    "bpi_pain_interference" ="VAS (/10)"
+    
+  )
+
+  t <- switch(out,
+    "quick_dash_score" = "Quick dash score",
+    "disability" = "Disability",
+    "css" = "CRPS severity score",
+    "EQindex" = "Quality of life",
+    "pain" = "Pain",
+    "bpi_pain_intensity" = "Pain intensity",
+    "bpi_pain_interference" = "Pain interference"
+  )
+  
+
+  
+  limits_y <- switch (out,
+    "disability" = c(-3, 3),
+    "css" = c(0,16),
+    "EQindex" = c(0, 1)
+  )
+  
+  breaks_y <- switch (out,
+    "disability" = c(-2,-1,0,1,2),
+    "css" = c(0,4,8,12,16),
+    "EQindex" = c(0, 0.25,0.5,0.75,1)
+  )
+
+  if (out == "pain") {
+    d_plot_sum <- d_plot |>
+      select(patient_id, redcap_event_code, bpi_pain_interference, bpi_pain_intensity) |>
+      pivot_longer(
+        cols = starts_with("bpi"),
+        names_to = "metric",
+        values_to = "values"
+      ) |>
+      mutate(metric = factor(metric, levels = c("bpi_pain_intensity", "bpi_pain_interference"), labels = c("Intensity", "Interference"))) |>
+      group_by(redcap_event_code, metric) |>
+      summarise(
+        m = mean(values, na.rm = T),
+        cil = ci_low(values),
+        cih = ci_high(values)
+      )
+    pos <- position_dodge(width = 0.3)
+    plot <- d_plot_sum |>
+      ggplot(aes(x = redcap_event_code, y = m, shape = metric)) +
+      geom_errorbar(aes(ymin = cil, ymax = cih), width = 0.1, position = pos) +
+      geom_point(position = pos, size = 3) +
+      geom_line(position = pos) +
+      #scale_color_manual(values = c("#ED0000FF", "#00468BFF")) +
+      scale_y_continuous(limits = c(0,10),n.breaks = 5, breaks = c(0, 2.5, 5, 7.5, 10), expand = c(0,0)) +
+      scale_x_continuous(n.breaks = 4, breaks = c(2.47, 4.5, 6, 12)) +
+      labs(
+        title = t,
+        y = paste(t,"rating", units),
+        x = "Time (months)",
+        shape = ""
+      ) +
+      my_theme() +
+      theme(
+        legend.position = c(0.5, 0.95),
+        legend.direction = "horizontal"
+      ) +
+      guides(colour = guide_legend(override.aes = list(size = 4)))
+  } else {
+    d_plot_sum <- d_plot |>
+      select(patient_id, redcap_event_code, .data[[out]]) |>
+      group_by(redcap_event_code) |>
+      summarise(
+        m = mean(.data[[out]], na.rm = T),
+        cil = ci_low(.data[[out]]),
+        cih = ci_high(.data[[out]])
+      )
+
+    plot <- d_plot_sum |>
+      ggplot(aes(x = redcap_event_code, y = m)) +
+      geom_errorbar(aes(ymin = cil, ymax = cih), width = 0.1) +
+      geom_point(size = 3) +
+      geom_line() +
+      scale_y_continuous(n.breaks = 5, limits = limits_y, breaks = breaks_y, expand = c(0,0)) +
+      scale_x_continuous(n.breaks = 4, breaks = c(2.47, 4.5, 6, 12)) +
+      labs(
+        title = t,
+        y = units,
+        x = "Time (months)"
+      ) +
+      my_theme()
+  }
+
+
+
+  return(plot)
+}
+
+
+
+```
+
+```{r p_sample}
+p_css <- p_all_fun("css")
+p_pain <- p_all_fun("pain")
+p_eq <- p_all_fun("EQindex")
+p_disability <- p_all_fun("disability")
+p_pain_inter <- p_all_fun("bpi_pain_interference")
+p_pain_intes <- p_all_fun("bpi_pain_intensity")
+
+
+
+fig5 <- (p_css + p_pain) / (p_disability + p_eq)
+fig5
+#output
+#ggsave(here("output", "plot_outcome.png"), fig5, dpi = 1200, width = 9, height = 8)
+
+
+```
+
+
+
+# Figure 6
+
+
+
+```{r p_modal_fun}
+# function to plot evolution in each subgroup for each outcome
+p_modal_fun <- function(out) {
+  
+
+   units <- switch(out,
+    "quick_dash_score" = "(/xdash)",
+    "disability" = "Z-score",
+    "css" = "CSS (/16)",
+    "EQindex" = "EQ index (/1)",
+    "pain" = "(/10)",
+    "bpi_pain_intensity" ="Pain rating (/10)",
+    "bpi_pain_interference" ="Pain rating (/10)"
+    
+  )
+
+  t <- switch(out,
+    "quick_dash_score" = "Quick dash score",
+    "disability" = "Disability",
+    "css" = "CRPS severity score",
+    "EQindex" = "Quality of life",
+    "pain" = "Pain",
+    "bpi_pain_intensity" = "Pain intensity",
+    "bpi_pain_interference" = "Pain interference"
+  )
+  
+  
+  limits_y <- switch (out,
+      "bpi_pain_intensity" = c(0,10),
+    "bpi_pain_interference" = c(0,10),  
+    "disability" = c(-3, 3),
+    "css" = c(0,16),
+    "EQindex" = c(0, 1)
+  )
+  
+  breaks_y <- switch (out,
+    "bpi_pain_intensity" =  c(0, 2.5, 5, 7.5, 10),
+    "bpi_pain_interference" =  c(0, 2.5, 5, 7.5, 10), 
+    "disability" = c(-2,-1,0,1,2),
+    "css" = c(0,4,8,12,16),
+    "EQindex" = c(0, 0.25,0.5,0.75,1)
+  )
+  
+  
+
+
+    d_plot_sum <- d_plot |>
+      select(patient_id, redcap_event_code, .data[[out]], Modal) |>
+      mutate(Modal = factor(Modal, levels = c("1", "2", "3", "4"), labels = c("Mild", "Moderate", "Body representation disturbance", "Pressure allodynia"))) |>
+      filter( !is.na(Modal) == T) |> # removing participants with no subgroup assignment
+      group_by(redcap_event_code, Modal) |> 
+      summarise(
+        m = mean(.data[[out]], na.rm = T),
+        cil = ci_low(.data[[out]]),
+        cih = ci_high(.data[[out]])
+      ) 
+  pos <- position_dodge(width = 0.6)
+  plot <- d_plot_sum |>
+      ggplot(aes(x = redcap_event_code, y = m, col = Modal)) +
+      geom_errorbar(aes(ymin = cil, ymax = cih), width = 0.1, position = pos) +
+      geom_point(position = pos, size = 2) +
+      geom_line(position = pos) +
+      scale_color_manual(values = c("#283F8B", "#288B00", "#F67E00", "#F43032")) +
+    scale_y_continuous(n.breaks = 5, breaks = breaks_y, limits = limits_y, expand = c(0,0)) +
+      scale_x_continuous(n.breaks = 3, breaks = c(2.47, 4.5, 6, 12)) +
+      labs(
+        title = t,
+        y = units,
+        x = "Time (months)",
+        col = "Early CRPS profile:"
+      ) +
+      my_theme() +
+      theme(
+       # legend.position = c(0.5, 0.95),
+        legend.direction = "vertical",
+        legend.title = element_text(size = 13, colour = "black"),
+        legend.text = element_text(size = 13, colour = "black")
+      ) +
+      guides(colour = guide_legend(override.aes = list(size = 4)))
+  
+
+plot
+
+  return(plot)
+
+}
+```
+
+```{r p_modal}
+p_css <- p_modal_fun("css")
+
+p_eq <- p_modal_fun("EQindex")
+p_disability <- p_modal_fun("disability")
+p_pain_inter <- p_modal_fun("bpi_pain_interference")
+p_pain_intes <- p_modal_fun("bpi_pain_intensity")
+
+
+
+ 
+fig6 <- p_css + p_pain_intes + p_pain_inter  +  p_disability + p_eq +guide_area()+ plot_layout(ncol = 3, guides = "collect") 
+fig6
+# output
+#ggsave(here("output","figure_plot_modal.png"), fig6, dpi = 1200, width = 11.5, height = 9  )
+```
+
