@@ -13,4 +13,5 @@ CODE
 - QST analyses: XXX.Rmd
 - Figure 6. Evolution of each Biopsychosocial Early CRPS (BE-CRPS) profile: XXX.Rmd
 - Predictive models: XXX.Rmd
+- Shiny application: XXX.Rmd
 
