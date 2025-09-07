@@ -26,6 +26,18 @@ library(readxl) #excel tools
 library(writexl)#excel tools
 library(here) #datasets tools
 
+library(mitml) #multiple imputation tools
+library(pan)#multiple imputation tools
+library(mice) #multiple imputation tools
+library(broom.mixed) #summary of lmer
+library(lme4) #lmm statistical tools
+library(tidyr) #general data handling
+library(lattice) #plotting
+library(lmerTest) #lmer tests
+library(emmeans) #marginal means
+library(mlfit)
+
+
 # treatment contrasts of factors for lmer
 options(contrasts = c("contr.treatment","contr.poly"))
 
@@ -98,6 +110,36 @@ dat_formatted_work <- dat_formatted |>
  # mutate(redcap_event_code = factor(redcap_event_code)), path = here("output", "data_formatted_work_20250207_test.xlsx"))
 
 ```
+
+
+```{r data_import_imput}
+load(here("data", "multiple_imputation_final_20250113.RData"))
+
+#imputed dataset : données d'inclusion, imputation des valeurs manquantes qu'on va vouloir "répliquer" sur les autres lignes dans le dataset final (à l'exception des outcomes)
+#data <- read_excel(here("data","imputation_inclusion_dataset.xlsx")) |> 
+data <- imputation_inclusion_dataset |> 
+  mutate(across(starts_with("css_s"), factor)) |>
+  mutate(across(c("Modal", "gsrh",  "crps_subtypes", "localization", "sex", "RtW", "dichotoumous_diagnosis"), factor))
+  mutate(across(starts_with("crps_treatment", "triggering"), factor))
+
+#data_model_full_20241206 : dataset contenant les outcomes des différents time-points, on va vouloir remplacer les valeurs des prédicteurs par l'autre dataset.
+data_model_full <- data_formatted_20241206 |> 
+  mutate(across(starts_with("css_s"), factor)) |>
+  mutate(across(c("Modal", "gsrh", "crps_5a","crps_6",  "crps_subtypes", "dichotoumous_diagnosis", "localization", "sex", "crps_type", "work_type"), factor))
+  mutate(across(starts_with("crps_treatment", "trigger"), factor))
+  
+data_1year <- X1_year_final_imputation |> 
+  mutate(across(starts_with("css_s"), factor)) |>
+  mutate(across(c("Modal", "gsrh", "crps_5a","crps_6",  "crps_subtypes", "dichotoumous_diagnosis", "localization", "sex", "crps_type", "work_type"), factor))
+  mutate(across(starts_with("crps_treatment", "trigger"), factor))
+  
+
+  #Test
+ # m.painintensity.css <- glm(RtW ~ age  + sex + localization + scintigraphy_ratio, family="binomial", data =data_model_full) 
+#summary(m.painintensity.css)
+  
+```
+
 
 # Univariate analyses
 
@@ -460,6 +502,339 @@ write_xlsx(res_dic_diag_glm, path = here("output", paste0("univariate_diag_glm_"
 
 
 
+# Mutivariate analyses
+
+## Data sets imputation
+
+
+```{r imputation of the 75 datasets using mice}
+imp.mice <- mice(data, m = 75, seed = 123)
+
+l <- setNames(lapply(1:75, function(i) complete(imp.mice, i)), as.character(1:75 )) # collecting all data sets in a list
+
+# Function to replace rows with imputed data, keeping some columns unchanged
+replace_with_imputed <- function(original_data, imputed_data, outcome_columns) {
+  # Make a copy of the original data so that we don't overwrite it directly
+  updated_data <- original_data
+  
+  # Loop through each row in the original dataset
+  for (i in 1:nrow(original_data)) {
+    # Get the patient_id for the current row
+    patient_id <- original_data$patient_id[i]
+    
+    # Find the corresponding row in the imputed dataset for this patient_id
+    imputed_row <- imputed_data[imputed_data$patient_id == patient_id, ]
+    
+    # If we find a matching row from the imputed dataset
+    if (nrow(imputed_row) == 1) {
+      # For each column in the imputed row, check if types match between original and imputed dataset
+      for (col in setdiff(names(imputed_row), outcome_columns)) {
+        # Ensure column types match before assignment
+        if (is.factor(updated_data[[col]])) {
+          updated_data[[col]][i] <- as.factor(imputed_row[[col]])
+        } else if (is.character(updated_data[[col]])) {
+          updated_data[[col]][i] <- as.character(imputed_row[[col]])
+        } else if (is.numeric(updated_data[[col]])) {
+          updated_data[[col]][i] <- as.numeric(imputed_row[[col]])
+        }
+      }
+    }
+  }
+  return(updated_data)
+}
+
+# List of outcome columns that should remain unchanged in the dataset including all the assessements (several lines by participants)
+outcome_columns <- c("disability", "redcap_event_code", "bpi_pain_intensity", "bpi_pain_interference", "css", "EQindex", "work_status", "dichotoumous_diagnosis") 
+
+# Loop through each imputed dataset in the list 'l'
+updated_datasets <- list()
+for (i in 1:length(l)) {
+
+  imputed_data_i <- l[[i]]  # Get the i-th imputed dataset
+  
+  # Replace rows in the original dataset with corresponding rows from the imputed dataset
+  updated_datasets[[i]] <- replace_with_imputed(data_model_full, imputed_data_i, outcome_columns)
+
+}
+
+
+# Define columns to exclude from numeric conversion (columns you want to treat as factors)
+exclude_columns <-  (c("Modal", "gsrh", "crps_5a","crps_6",  "crps_subtypes", "dichotoumous_diagnosis", "localization", "sex", "crps_type", "crps_subtype", "css_symptoms___1_continiouspain", "css_symptoms___2_allodyniaorhyperalgesia", "css_symptoms___3_temperature", "css_symptoms___4_skincolor", "css_symptoms___5_sweating", "css_symptoms___6_edema", "css_symptoms___7_trophic", "css_symptoms___8_motor", "css_signs___1_hyperalgesia", "css_signs___2_allodynia", "css_signs___3_temperature", "css_signs___4_skincolor", "css_signs___5_sweating", "css_signs___6_edema", "css_signs___7_trophic", "css_signs___8_motor", "skin_color")) 
+
+# Iterate through each dataset in updated_datasets
+for (i in 1:length(updated_datasets)) {
+  dataset <- updated_datasets[[i]]
+# Loop through each column in the dataset
+  for (col in names(dataset)) {
+    # If the column is not in the exclude list, convert it to numeric
+    if (!(col %in% exclude_columns)) {
+      # Try converting to numeric (use suppressWarnings if you want to avoid warning messages)
+      dataset[[col]] <- suppressWarnings(as.numeric(dataset[[col]]))
+    } else {
+      # Otherwise, convert it to factor
+      dataset[[col]] <- factor(dataset[[col]])
+    }
+  }
+  
+  # Update the list of datasets with the transformed dataset
+  updated_datasets[[i]] <- dataset
+}
+
+ #transform the list in mitml.list to use it in mitml
+updated_datasets <- as.mitml.list(updated_datasets)
+
+# Ensure that patient_id is a factor in all imputed datasets
+for (i in 1:length(updated_datasets)) {
+  updated_datasets[[i]]$patient_id <- factor(updated_datasets[[i]]$patient_id)
+}
+
+```
+
+## Outcome imputation
+
+```{r imputation of outcomes [CSS et diagnosis]}
+imp.mice.outcome <- mice(data_1year[, c("css","patient_id", "redcap_event_code", "dichotoumous_diagnosis")], m = 75, seed = 123)
+
+# Assuming 'updated_datasets' is your existing mitml list
+# and 'imp' is your mice imputation object
+imputed_data_list <- lapply(1:75, function(i) complete(imp.mice.outcome, action = i))
+
+
+for (i in 1:75) {
+  # Extract the current mitml dataset and imputed dataset
+  mitml_data <- updated_datasets[[i]]
+  mice_imputed_data <- imputed_data_list[[i]]
+  
+  # Iterate over each row and replace missing values for 'css' and 'dichotoumous_diagnosis'
+  for (j in 1:nrow(mitml_data)) {
+    # Match based on 'patient_id' and 'redcap_event_code'
+    match_row <- mice_imputed_data[mice_imputed_data$patient_id == mitml_data$patient_id[j] & 
+                                    mice_imputed_data$redcap_event_code == mitml_data$redcap_event_code[j], ]
+    
+    # If a match is found, replace missing values
+    if (nrow(match_row) == 1) {
+      if (is.na(mitml_data$css[j])) {
+        mitml_data$css[j] <- match_row$css
+      }
+      if (is.na(mitml_data$dichotoumous_diagnosis[j])) {
+        mitml_data$dichotoumous_diagnosis[j] <- match_row$dichotoumous_diagnosis
+      }
+      
+    }
+  }
+  
+  # Update the mitml list with the modified dataset
+  updated_datasets[[i]] <- mitml_data
+}
+
+```
+
+
+## Linearity check
+```{r time, we are visually checking if the evolution of each outcome is linear}
+
+set.seed(123)
+
+data_model_full |> 
+  filter(patient_id %in% unique(data_model_full$patient_id)[sample(seq(1,113), 20)]) |> # random selection of 20 participants among the 113
+  ggplot(aes(x = redcap_event_code, y = disability, group = patient_id)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~patient_id)
+
+#Other visualised outcomes: disability, bpi_pain_intensity, bpi_pain_interference, css, EQindex
+
+```
+
+## Multivariate models for each outcome
+
+```{r pain intensity}
+
+##With BE-CRPS profiles
+#Complete model
+Modal+ disability_T1 +css_T1 +Z_mps_affected+csq_ignoring_painful_sensations+psqtotal_score+Z_cdt_affected+bmi+Z_vdt_affected+education_lvl +HADS_anxiety_score +csq_prayer +relative_strength+medicolegal_procedure +immobilization
+
+#Final model
+m.painintensity.css2 <- with(updated_datasets, lmer(bpi_pain_intensity ~ redcap_event_code + I(redcap_event_code^2) + age  + sex + localization+ bpi_pain_intensity_T1 + Modal+csq_ignoring_painful_sensations+bmi+ +(1 |patient_id) , REML = T)) 
+
+testModels(m.painintensity.css, m.painintensity.css2, method="D3")
+
+testEstimates(m.painintensity.css2, extra.pars = TRUE)
+
+multilevelR2(m.painintensity.css2)
+
+##Without BE-CRPS profiles
+#Final model
+m.painintensity.orebro <- with(updated_datasets, lmer(bpi_pain_intensity ~ redcap_event_code + I(redcap_event_code^2) + age  + sex + localization+ bpi_pain_intensity_T1 + orebro_score +csq_ignoring_painful_sensations+bmi    + (1 |patient_id) , REML = T))
+testEstimates(m.painintensity.6, extra.pars = TRUE)
+
+```
+
+
+```{r disability}
+##With BE-CRPS profiles
+#Complete model
+m.disability <-  with(updated_datasets, lmer(disability ~ redcap_event_code + I(redcap_event_code^2) + age + sex + localization + Modal+csq_ignoring_painful_sensations+Z_mps_affected + disability_T1+css_T1 +relative_strength+Z_cdt_affected+medicolegal_procedure + csq_prayer +education_lvl+ssq_availibility+bmi+HADS_anxiety_score+psqtotal_score+Z_vdt_affected +HADS_anxiety_score+ alcohol+currently_smoking+ (1|patient_id), REML = FALSE))
+
+#Final model
+m.disability <-  with(updated_datasets, lmer(disability ~ redcap_event_code + I(redcap_event_code^2) + age + sex + localization  + disability_T1+ssq_availibility+bmi + (1|patient_id), REML = T))
+
+testModels(m.disability.nointeract, m.disability, method="D3")
+
+testEstimates(m.disability, extra.pars = TRUE)
+
+multilevelR2(m.disability)
+
+##Without BE-CRPS profiles
+#Complete model
+orebro_score +rbcrpsbpds_score+ +css_signs_2_allodynia+csq_ignoring_painful_sensations+Z_ppt_affected+ +Z_mps_affected+gsrh +triggering_event2+ +css_symptoms_5_sweating+ +relative_strength+Z_cdt_affected +medicolegal_procedure+css_signs_1_hyperalgesia+csq_prayer+css_symptoms_3_temperature+education_lvl+ssq_availibility+ bmi+ +skin_disturbances_4_skin+Z_vdt_affected+ +alcohol
+
+#Final model
+m.disability.orebro <-  with(updated_datasets, lmer(disability ~ redcap_event_code + I(redcap_event_code^2) + age + sex + localization + orebro_score+css_signs___2_allodynia+alcohol+ disability_T1 + (1|patient_id), REML = T))
+
+```
+
+
+```{r QoL}
+##With BE-CRPS profiles
+#Complete model
+EQindex_T1+ Modal+disability_T1+Z_mps_affected+css_T1 + bmi +crps_subtypes+Z_vdt_affected+Z_cdt_affected+ssq_availibility+ +csq_ignoring_painful_sensations+education_lvl +relative_strength+ csq_prayer+ HADS_anxiety_score+ medicolegal_procedure
+
+#Final model
+m.EQ <-  with(updated_datasets, lmer(EQindex ~ redcap_event_code + I(redcap_event_code^2) + age + sex + localization+EQindex_T1+ Modal + bmi + + HADS_anxiety_score+ (1 |patient_id), REML = T))
+
+testModels(m.EQ.nointeract1, m.EQ, method="D3")
+testEstimates(m.EQ, extra.pars = TRUE)
+multilevelR2(m.EQ)
+
+##Without BE-CRPS profiles
+#Complete model
+EQindex_T1+orebro_score+css_signs___2_allodynia+Z_mps_affected + bmi+crps_subtypes+Z_vdt_affected+Z_cdt_affected+ssq_availibility+rbcrpsbpds_score+css_signs___1_hyperalgesia+csq_ignoring_painful_sensations+education_lvl+ css_symptoms___5_sweating+css_symptoms___3_temperature+relative_strength+ csq_prayer+medicolegal_procedure+triggering_event2
+#Final model
+m.EQ.ompsq <-  with(updated_datasets, lmer(EQindex ~ redcap_event_code + I(redcap_event_code^2) + age + sex + localization+EQindex_T1+EQindex_T1+orebro_score+css_signs___2_allodynia + (1 |patient_id), REML = T))
+
+```
+
+
+```{r CSS}
+##With BE-CRPS profiles
+#Complete model
+Modal + disability_T1+css_T1+ Z_mps_affected+crps_subtypes+Z_vdt_affected+Z_cdt_affected+ssq_availibility+ crps_type+Z_cpt_affected+bmi+psqtotal_score+csq_ignoring_painful_sensations+education_lvl+relative_strength
+
+#Final model
+m.css <-  with(updated_datasets, lmer(css ~ redcap_event_code + I(redcap_event_code^2) + age + sex + localization +Modal + disability_T1+css_T1+ (1 |patient_id), REML = T))
+
+testModels(m.css.nointeract, m.css, method="D3")
+testEstimates(m.css, extra.pars = TRUE)
+multilevelR2(m.css)
+
+##Without BE-CRPS profiles
+#Complete model
+redcap_event_code + I(redcap_event_code^2) + age + sex + localization+ orebro_score+triggering_event2+Z_mps_affected+ css_symptoms___3_temperature+css_symptoms___5_sweating+css_signs___1_hyperalgesia+css___signs_6_edema+css_signs___7_trophic+crps_subtypes+Z_vdt_affected+Z_cdt_affected+ssq_availibility+crps_type+Z_cpt_affected+psqtotal_score+csq_ignoring_painful_sensations+education_lvl+css_symptoms___4_skincolor+relative_strength+css_signs___2_allodynia+rbcrpsbpds_score
+
+#Final model
+m.css.ompsq <-  with(updated_datasets, lmer(css ~ redcap_event_code + I(redcap_event_code^2) + age + sex + localization+ orebro_score+css_symptoms___5_sweating+css_signs___6_edema+crps_subtypes+css_signs___2_allodynia+ (1 |patient_id), REML = T))
+```
+
+```{r pain interference}
+##With BE-CRPS profiles
+#Complete model
+disability_T1+Modal+education_lvl+psqtotal_score+HADS_anxiety_score+ssq_availibility+css_symptoms_2_allodyniaorhyperalgesia+csq_prayer+Z_cdt_affected+css_symptoms_5_sweating+csq_ignoring_painful_sensations+currently_smoking+Z_mps_affected+bmi+immobilizatio+alcohol+medicolegal_procedure
+
+#Final model
+m.paininterference <- with(updated_datasets, lmer(bpi_pain_interference ~ redcap_event_code + I(redcap_event_code^2) + age + sex + localization+Modal+bpi_pain_interference_T1+ (1  |patient_id), REML = T))
+
+testEstimates(m.paininterference, extra.pars = TRUE)
+testModels(m.paininterference.nointeract1, m.paininterference, method="D3")
+multilevelR2(m.paininterference)
+
+##Without BE-CRPS profiles
+#Complete model
+redcap_event_code + I(redcap_event_code^2) + age + sex + localization+bpi_pain_interference_T1+orebro_score+ education_lvl+++ssq_availibility++csq_prayer+Z_cdt_affected+css_signs___2_allodynia+css_symptoms___5_sweating+ +csq_ignoring_painful_sensations+currently_smoking+Z_mps_affected+bmi+immobilization+alcohol+medicolegal_procedure
+
+#Final model
+m.paininterference.ompsq <- with(updated_datasets, lmer(bpi_pain_interference ~ redcap_event_code + I(redcap_event_code^2) + age + sex + localization+bpi_pain_interference_T1+orebro_score+alcohol+ (1  |patient_id), REML = T))
+
+```
+
+
+```{r rtw with ompsq}
+### with glmer
+
+excluded_patient_ids <- c(282, 320, 392, 470, 718, 872, 933)
+
+# Create a list of filtered datasets (keeping the `mids` structure)
+imp.mice.rtw <- lapply(1:imp.mice$m, function(i) {
+  # Extract the imputed dataset 'i'
+  data <- complete(imp.mice, i)
+  
+  # Filter based on two conditions:
+  # 1. 'workingbeforecrps...5 == 1'
+  # 2. Exclude rows with the specified patient_ids
+  data_filtered <- data %>%
+    filter(workingbeforecrps...5 == 1 & !(patient_id %in% excluded_patient_ids))
+  
+  return(data_filtered)
+})
+
+# Now we need to reconstruct the `mids` object after filtering
+# First, we'll reassemble the `imp.mice.rtw` list into a data.frame that contains the imputed datasets
+imp.mice_complete <- imp.mice.rtw[[1]]
+
+# Create a new 'mids' object by combining the filtered datasets back into the mice structure
+# `mice` function expects the imputed data to be of class `mids`
+imp.mice_new <- mice(imp.mice_complete, m = imp.mice$m)
+
+#Full initial model: age + sex + localization + orebro_score + work_type + medicolegal_procedure + dominant_side_affected + csq_prayer + css_symptoms___3_temperature + education_lvl
+
+fit.rtw <- with(imp.mice_new, glm(RtW ~ age + sex + localization + orebro_score  + medicolegal_procedure  , family = "binomial"))
+                    
+fit.rtw2 <- with(imp.mice_new, glm(RtW ~ age + sex + localization + orebro_score  , family = "binomial"))
+
+D3(fit.rtw, fit.rtw2)
+
+pooled_rtw2 <- pool(fit.rtw2)
+summary(pooled_rtw2)
+tidy(pooled_rtw2)
+
+```
+
+
+```{r CRPS diagnosis}
+#
+ updated_datasets_dich <- updated_datasets
+for(i in 1:length(updated_datasets)){
+  updated_datasets_dich[[i]] <-  updated_datasets[[i]] |> 
+    mutate(dichotoumous_diagnosis = as.numeric(dichotoumous_diagnosis))
+}
+updated_datasets_dich[[1]] |> view()
+
+##With BE-CRPS profile
+#Complete model
+Modal+ disability_T1+ css_T1+bmi+crps_subtypes+education_lvl+ scintigraphy+ Z_mps_affected+HADS_anxiety_score+csq_reinterpretation+Z_vdt_affected+Z_tsl_affected+medicolegal_procedure
+
+#Final model
+fit.dichoto2 <- with(imp.mice, glm(dichotoumous_diagnosis ~ age + localization + sex + Modal  + bmi , family = "binomial"))
+
+D3(fit.dichoto, fit.dichoto2)
+pooled_dichoto2 <- pool(fit.dichoto2)               
+
+summary(pooled_dichoto2)
+emmeans(pooled_dichoto2)
+tidy(pooled_dichoto2)
+exp(2.44942073) - ( 1.96 * exp(0.85809417))
+
+###WIthout OMPSQ
+#Final model
+fit.dichoto.orebro2 <- with(imp.mice, glm(dichotoumous_diagnosis ~ age + localization + sex + orebro_score + bmi  , family = "binomial"))
+
+D3(fit.dichoto.orebro, fit.dichoto.orebro2)
+pooled_dichoto.orebro2 <- pool(fit.dichoto.orebro2)               
+
+summary(pooled_dichoto.orebro2)
+tidy(pooled_dichoto.orebro2)
+
+```
 
 
 
